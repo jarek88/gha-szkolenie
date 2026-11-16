@@ -1,0 +1,24 @@
+name: 03 – Workflow Runners
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  ubuntu-echo:
+    runs-on: ubuntu-latest
+    steps:
+        - name: Show os
+          run: echo "This job is running on ${{ runner.os }}"
+
+  windows-echo:
+    runs-on: windows-latest
+    steps:
+        - name: Show os
+          run: echo "This job is running on ${{ runner.os }}"
+
+  macos-echo:
+    runs-on: macos-latest
+    steps:
+        - name: Show os
+          run: echo "This job is running on ${{ runner.os }}"
