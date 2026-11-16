@@ -1,1 +1,1 @@
-# gha-szkolenie 16-11-2026
+# gha-szkolenie 16/11/2026
