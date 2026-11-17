@@ -1,13 +1,37 @@
 name: "05 – 2 – Event Filters and Activity Types"
+permissions:
+    contents: read
 on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '05-usung-filters-and-activity-types/dokumentacja/**'
   pull_request:
     branches:
       - main
     types:
       - closed
+    paths-ignore:
+      - '05-usung-filters-and-activity-types/dokumentacja/**'
+    
 
 jobs:
   example:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ github.workspace }}/05-usung-filters-and-activity-types
     steps:
-      - run: echo "Running whenever a PR is closed"
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Install dependencies
+        run: npm ci --include=dev
+      - name: Run tests
+        run: npm test
+          
