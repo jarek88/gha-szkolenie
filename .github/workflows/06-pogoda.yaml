@@ -21,4 +21,4 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       - name: Display weather info
-        run: ./start.sh ${{ github.event.inputs.API_KEY }} ${{ github.event.inputs.CITY }} >> $GITHUB_STEP_SUMMARY
+        run: bash start.sh ${{ github.event.inputs.API_KEY }} ${{ github.event.inputs.CITY }} >> $GITHUB_STEP_SUMMARY
