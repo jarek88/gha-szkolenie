@@ -38,9 +38,9 @@ jobs:
           tags: ${{ env.TAG }}
       
       - name: Build docker image
-        uses: docker/build-push-action@v4
+        uses: docker/build-push-action@v6
         with:
-          context: .
+          context:  ${{ github.workspace }}/CWICZENIA/04-praca-z-zewnetrzymi-akcjami/docker-app-02
           push: false
           load: true
           tags: ${{ env.IMAGE_NAME }}:${{ env.TAG }}
