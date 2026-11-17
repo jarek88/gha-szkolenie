@@ -1,0 +1,24 @@
+name: "06 – Pogoda"
+
+on:
+  workflow_dispatch:
+    inputs:
+      API_KEY:
+        description: "API key for weather service"
+        required: true
+      CITY:
+        description: "City to get weather for"
+        required: true
+
+jobs:
+  pogoda:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: CWICZENIA/06-context/pogoda
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Display weather info
+        run: ./start.sh ${{ github.event.inputs.API_KEY }} ${{ github.event.inputs.CITY }} >> $GITHUB_STEP_SUMMARY
