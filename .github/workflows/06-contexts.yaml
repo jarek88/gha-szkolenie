@@ -1,0 +1,30 @@
+name: "06 – Contexts"
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  echo-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Echo GitHub context data
+        run: |
+          echo "Event name: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "SHA: ${{ github.sha }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Workflow: ${{ github.workflow }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Run number: ${{ github.run_number }}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Repository owner: ${{ github.repository_owner }}"
+          echo "Repository default branch: ${{ github.event.repository.default_branch }}"
+          echo "Event payload: ${{ toJson(github.event) }}"
+          echo "Repository full name: ${{ github.repository }}"
+          echo "Repository URL: ${{ github.event.repository.html_url }}"
+          echo "Repository description: ${{ github.event.repository.description }}"
+      - name: Retrieve repository variable
+        run: |
+          echo "Repository variable MY_VAR: ${{ vars.MY_VAR }}"
