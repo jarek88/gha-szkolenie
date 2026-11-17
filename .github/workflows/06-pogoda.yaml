@@ -1,4 +1,5 @@
 name: "06 – Pogoda"
+run-name: "Display weather for a city of ${{ github.event.inputs.CITY }}"
 
 on:
   workflow_dispatch:
