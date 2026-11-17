@@ -10,5 +10,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      - name: Printing Folders
-        run: ls -R
+      - name: Setup node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install dependencies
+        run: cd 04-using-actions && npm ci
+      - name: Run tests
+        run: cd 04-using-actions && npm test
