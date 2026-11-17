@@ -1,0 +1,66 @@
+name: "06-06 Pogoda API CI"
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  API_KEY: ${{ secrets.API_KEY_POGODA }}
+  DOCKER_LOGIN: ${{ secrets.DOCKER_LOGIN }}
+  DOCKER_KEY: ${{ secrets.DOCKER_TOKEN }}
+  LOCAL_IMAGE_NAME: 'python_pogoda:test'
+  WORKDIR: ./CWICZENIA/06-context/pogoda_python_flusk
+  
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ env.WORKDIR }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build docker image
+        run: docker build -t ${{ env.LOCAL_IMAGE_NAME }} . >> $GITHUB_STEP_SUMMARY
+
+      - name: Run container
+        run: docker run -d --name pogoda_api -p 8000:8000 -e OPENWEATHER_API_KEY="${{ env.API_KEY }}" "${{ env.LOCAL_IMAGE_NAME }}"
+
+      - name: Wait for container to be ready
+        run: |
+          echo "Waiting for container to be ready..."
+          sleep 10
+          docker ps -a
+      - name: Call local weather endpoint
+        run: |
+          set -e
+          echo "Calling local weather endpoint..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/weather?city=Warsaw&api_key=${{ env.API_KEY }})
+          echo "HTTP status: $response"
+          if [ "$response" -ne 200 ]; then
+            echo "Request failed with status $response"
+            exit 1
+          fi
+          echo "Request succeeded with status $response"
+          
+      - name: Stop and remove container
+        run: |
+          docker stop pogoda_api
+          docker rm pogoda_api
+      
+      - name: Login to Docker Hub
+        run: echo "${{ env.DOCKER_KEY }}" | docker login -u "${{ env.DOCKER_LOGIN }}" --password-stdin
+      
+      - name: Push image to Docker Hub only for main branch
+        if: github.ref == 'refs/heads/main'
+        run: |
+          HUB_IMAGE_BASE="${{ env.DOCKER_LOGIN }}/python_pogoda"
+          echo "Tag local image as $HUB_IMAGE_BASE"
+          docker tag ${{ env.LOCAL_IMAGE_NAME }} $HUB_IMAGE_BASE:$(echo "${{ github.sha }}" | cut -c1-7)-jaroslaw_kisiel
+          docker push $HUB_IMAGE_BASE:$(echo "${{ github.sha }}" | cut -c1-7)-jaroslaw_kisiel
