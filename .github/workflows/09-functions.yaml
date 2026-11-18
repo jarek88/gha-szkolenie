@@ -7,6 +7,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      environment:
+        description: 'The environment for the workflow'
+        required: false
+        type: environment
 jobs:
   echo1:
     runs-on: ubuntu-latest
