@@ -16,9 +16,10 @@ permissions:
 
 env:
   WORKDIR: ./CWICZENIA/07-expressions/pogoda_python_flusk
-  TEST_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/python_pogoda:test
-  HUB_IMAGE_BASE: ${{ secrets.DOCKERHUB_USERNAME }}/python_pogoda
+  TEST_IMAGE: ${{ secrets.DOCKER_LOGIN }}/python_pogoda:test
+  HUB_IMAGE_BASE: ${{ secrets.DOCKER_LOGIN }}/python_pogoda
   DEPLOY_ENV: ${{ github.ref == 'refs/heads/main' && 'prod07' || 'dev07' }}
+  API_KEY: ${{ secrets.API_KEY_POGODA }}
 
 jobs:
   build:
@@ -54,7 +55,8 @@ jobs:
       github.event_name == 'pull_request' ||
       (github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip tests]'))
     env:
-      OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+      OPENWEATHER_API_KEY: ${{ secrets.API_KEY_POGODA }}
+      API_KEY: ${{ secrets.API_KEY_POGODA }}
     steps:
       - name: Download image artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
