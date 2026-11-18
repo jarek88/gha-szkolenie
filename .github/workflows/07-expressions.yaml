@@ -1,0 +1,32 @@
+name: "07 Expressions CI"
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: "Debug mode"
+        type: boolean
+        required: true
+        default: false
+
+jobs:
+  echo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "[debug] Print start-up data"
+        if: ${{ github.event.inputs.debug == true }}
+        run: |
+            echo "Debug input: ${{ github.event.inputs.debug }}"
+            echo "Triggered by: ${{ github.event_name }}"
+            echo "Branch: ${{ github.ref }}"
+            echo "Commit SHA: ${{ github.sha }}"
+            echo "Runner OS: ${{ runner.os }}"
+      - name: "[debug] Print when triggered from main"
+        if: ${{ github.event.inputs.debug == true && github.ref == 'refs/heads/main' }}
+        run: |
+            echo "This workflow was triggered from the main branch for debug mode"
+      - name: "Hello world"
+        run: |
+            echo "Hello world"

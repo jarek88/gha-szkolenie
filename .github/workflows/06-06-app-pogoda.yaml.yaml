@@ -1,9 +1,9 @@
 name: "06-06 Pogoda API CI"
 
 on:
-  push:
-    branches:
-      - main
+  # push:
+  #   branches:
+  #     - main
   workflow_dispatch:
 
 env:
@@ -41,15 +41,16 @@ jobs:
         run: |
           set -e
           echo "Calling local weather endpoint..."
-          response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/weather?city=Warsaw&api_key=${{ env.API_KEY }})
+          response=$(curl -f -s -o /dev/null -w "%{http_code}" http://localhost:8000/weather?city=Warsaw&api_key=${{ env.API_KEY }})
           echo "HTTP status: $response"
           if [ "$response" -ne 200 ]; then
             echo "Request failed with status $response"
             exit 1
           fi
           echo "Request succeeded with status $response"
-          
+
       - name: Stop and remove container
+        if: always()
         run: |
           docker stop pogoda_api
           docker rm pogoda_api
@@ -58,7 +59,7 @@ jobs:
         run: echo "${{ env.DOCKER_KEY }}" | docker login -u "${{ env.DOCKER_LOGIN }}" --password-stdin
       
       - name: Push image to Docker Hub only for main branch
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
           HUB_IMAGE_BASE="${{ env.DOCKER_LOGIN }}/python_pogoda"
           echo "Tag local image as $HUB_IMAGE_BASE"
