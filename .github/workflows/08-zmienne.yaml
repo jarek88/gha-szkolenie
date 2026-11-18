@@ -19,12 +19,12 @@ env:
   # Repository variable: WORKDIR=./CWICZENIA/06-context/pogoda_python_flusk
   WORKDIR: ${{ vars.WORKDIR }}
   # Repository variable: DOCKER_LOGIN=TWOJ_LOGIN_DOCKERHUB
-  DOCKER_LOGIN: ${{ vars.DOCKER_LOGIN }}
+  DOCKER_LOGIN: ${{ secrets.DOCKER_LOGIN }}
   # Repository variable: DOCKER_IMAGE_NAME=python_pogoda
   DOCKER_IMAGE_NAME: ${{ vars.DOCKER_IMAGE_NAME }}
   # Repository variable: DOCKERHUB_TAG=cw08
-  TEST_IMAGE: ${{ vars.DOCKER_LOGIN }}/${{ vars.DOCKER_IMAGE_NAME }}:${{ vars.DOCKERHUB_TAG }}
-  HUB_IMAGE_BASE: ${{ vars.DOCKER_LOGIN }}/${{ vars.DOCKER_IMAGE_NAME }}
+  TEST_IMAGE: ${{ secrets.DOCKER_LOGIN }}/${{ vars.DOCKER_IMAGE_NAME }}:${{ vars.DOCKERHUB_TAG }}
+  HUB_IMAGE_BASE: ${{ secrets.DOCKER_LOGIN }}/${{ vars.DOCKER_IMAGE_NAME }}
   DOCKERHUB_TAG: ${{ vars.DOCKERHUB_TAG }}
   # Repository variable: DOCKER_PORT_EXTERNAL=18008
   DOCKER_PORT_EXTERNAL: ${{ vars.DOCKER_PORT_EXTERNAL }}
@@ -134,7 +134,7 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v4.8.0
         with:
-          username: ${{ vars.DOCKER_LOGIN }}
+          username: ${{ secrets.DOCKER_LOGIN }}
           password: ${{ secrets.DOCKER_TOKEN }}
 
       - name: Build and push image to Docker Hub
@@ -205,7 +205,7 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v4.8.0
         with:
-          username: ${{ vars.DOCKER_LOGIN }}
+          username: ${{ secrets.DOCKER_LOGIN }}
           password: ${{ secrets.DOCKER_TOKEN }}
 
       - name: Pull published image by digest
