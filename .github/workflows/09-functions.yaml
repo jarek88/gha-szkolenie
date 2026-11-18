@@ -1,0 +1,36 @@
+name: 09 – Using Functions
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+jobs:
+  echo1:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Failing step
+        id: fail-step
+        run: |
+          echo "This step will fail"
+          exit 1
+      - name: I will be skipped
+        if: steps.fail-step.outcome == 'success'
+        id: skip-step
+        run: |
+          echo "I will print if previous steps succeed"
+      - name:  I will execute 1
+        if: steps.fail-step.outcome == 'failure' || steps.skip-step.outcome == 'failure'
+        run: |
+          echo "I will print if any previous step fails."
+
+      - name:  I will execute 2
+        if: ${{ !cancelled() }}
+        run: |
+          echo "I will always print, except when the workflow is cancelled."
+
+      - name:  I will execute if cancelled
+        if: ${{ cancelled() }}
+        run: |
+          echo "I will execute when cancelled"
