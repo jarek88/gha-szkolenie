@@ -1,0 +1,384 @@
+name: 12A - Pogoda inputs and outputs
+
+on:
+  workflow_dispatch:
+    inputs:
+      first_name:
+        description: "Imie bez polskich znakow"
+        required: true
+        type: string
+      last_name:
+        description: "Nazwisko bez polskich znakow"
+        required: true
+        type: string
+      deployment_target:
+        description: "Cel deployu"
+        required: true
+        type: choice
+        default: github
+        options:
+          - github
+          - self-hosted
+      city:
+        description: "Miasto"
+        required: true
+        type: string
+        default: Warsaw
+      app_port:
+        description: "Port aplikacji"
+        required: true
+        type: number
+        default: 18800
+
+jobs:
+  prepare:
+    runs-on: self-hosted
+    outputs:
+      student_slug: ${{ steps.config.outputs.student_slug }}
+      image_tag: ${{ steps.config.outputs.image_tag }}
+      sha_tag: ${{ steps.config.outputs.sha_tag }}
+      container_name: ${{ steps.config.outputs.container_name }}
+      runner_labels: ${{ steps.config.outputs.runner_labels }}
+      app_port: ${{ steps.config.outputs.app_port }}
+      weather_city: ${{ steps.config.outputs.weather_city }}
+      ci_image: ${{ steps.config.outputs.ci_image }}
+      deployment_target: ${{ steps.config.outputs.deployment_target }}
+    steps:
+      - name: Validate inputs and calculate configuration
+        id: config
+        env:
+          FIRST_NAME: ${{ inputs.first_name }}
+          LAST_NAME: ${{ inputs.last_name }}
+          DEPLOYMENT_TARGET: ${{ inputs.deployment_target }}
+          CITY: ${{ inputs.city }}
+          APP_PORT: ${{ inputs.app_port }}
+          REPO_ID: ${{ github.repository_id }}
+        run: |
+          python3 <<'PY'
+          import os
+          import re
+          import json
+          import sys
+
+          def fail(message):
+              print(f"ERROR: {message}", file=sys.stderr)
+              raise SystemExit(1)
+
+          name_pattern = re.compile(r"^[A-Za-z]+(?:-[A-Za-z]+)*$")
+          first = os.environ["FIRST_NAME"]
+          last = os.environ["LAST_NAME"]
+
+          if not 1 <= len(first) <= 30 or not name_pattern.fullmatch(first):
+              fail("first_name musi zawierac 1-30 liter ASCII, rozdzielanych opcjonalnymi myslnikami")
+          if not 1 <= len(last) <= 30 or not name_pattern.fullmatch(last):
+              fail("last_name musi zawierac 1-30 liter ASCII, rozdzielanych opcjonalnymi myslnikami")
+
+          target = os.environ["DEPLOYMENT_TARGET"]
+          if target not in ("github", "self-hosted"):
+              fail("deployment_target musi byc github albo self-hosted")
+
+          city = os.environ["CITY"]
+          if not city or len(city) > 100 or any(ord(ch) < 32 or ord(ch) == 127 for ch in city):
+              fail("city musi byc niepuste, miec <=100 znakow i nie zawierac znakow sterujacych")
+
+          try:
+              port = int(os.environ["APP_PORT"])
+          except ValueError:
+              fail("app_port musi byc liczba calkowita")
+          if str(port) != os.environ["APP_PORT"].strip() or not 1024 <= port <= 65535:
+              fail("app_port musi byc liczba calkowita z zakresu 1024-65535")
+
+          slug = f"{first.lower()}-{last.lower()}"
+          sha = os.environ["GITHUB_SHA"]
+          repo_id = os.environ["REPO_ID"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          if target == "self-hosted":
+              container_name = f"cw12a-{repo_id}-{slug}-prod"
+              runner_labels = ["self-hosted", "linux"]
+          else:
+              container_name = f"cw12a-{repo_id}-{slug}-{run_id}"
+              runner_labels = ["self-hosted"]
+
+          values = {
+              "student_slug": slug,
+              "image_tag": f"{slug}-{sha}",
+              "sha_tag": sha,
+              "container_name": container_name,
+              "runner_labels": json.dumps(runner_labels, separators=(",", ":")),
+              "app_port": str(port),
+              "weather_city": city,
+              "ci_image": f"cw12a-weather:ci-{sha}",
+              "deployment_target": target,
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              for key, value in values.items():
+                  output.write(f"{key}={value}\n")
+          print(json.dumps(values, ensure_ascii=False))
+          PY
+
+  build:
+    needs: prepare
+    runs-on: self-hosted
+    outputs:
+      image_id: ${{ steps.image.outputs.image_id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build weather image once
+        env:
+          CI_IMAGE: ${{ needs.prepare.outputs.ci_image }}
+        run: |
+          docker build -t "$CI_IMAGE" CWICZENIA/12A-Cwiczenia-pipeline-gha/pogoda_python_flusk
+
+      - name: Read and save image
+        id: image
+        env:
+          CI_IMAGE: ${{ needs.prepare.outputs.ci_image }}
+        run: |
+          IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$CI_IMAGE")
+          echo "image_id=$IMAGE_ID" >> "$GITHUB_OUTPUT"
+          docker save "$CI_IMAGE" -o image.tar
+
+      - name: Upload weather image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cw12a-weather-image
+          path: image.tar
+          retention-days: 1
+          overwrite: true
+
+  test:
+    needs: [prepare, build]
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download and load weather image
+        uses: actions/download-artifact@v4
+        with:
+          name: cw12a-weather-image
+
+      - name: Verify exact image and run container
+        env:
+          CI_IMAGE: ${{ needs.prepare.outputs.ci_image }}
+          EXPECTED_IMAGE_ID: ${{ needs.build.outputs.image_id }}
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+        run: |
+          docker load -i image.tar
+          LOADED_IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$CI_IMAGE")
+          if [ "$LOADED_IMAGE_ID" != "$EXPECTED_IMAGE_ID" ]; then
+            echo "ID obrazu sie nie zgadza: $LOADED_IMAGE_ID != $EXPECTED_IMAGE_ID" >&2
+            exit 1
+          fi
+          docker rm -f cw12a-ci >/dev/null 2>&1 || true
+          docker run -d --name cw12a-ci -p 127.0.0.1:18080:8080 \
+            -e OPENWEATHER_API_KEY="$OPENWEATHER_API_KEY" \
+            "$CI_IMAGE"
+
+      - name: Wait for health
+        run: |
+          ready=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:18080/healthz >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != "true" ]; then
+            echo "Kontener nie stal sie gotowy." >&2
+            docker logs cw12a-ci || true
+            exit 1
+          fi
+
+      - name: Run weather smoke test
+        env:
+          WEATHER_CITY: ${{ needs.prepare.outputs.weather_city }}
+        run: |
+          python3 CWICZENIA/12A-Cwiczenia-pipeline-gha/pogoda_python_flusk/tests/smoke_test.py \
+            --base-url http://127.0.0.1:18080 \
+            --city "$WEATHER_CITY"
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker logs cw12a-ci || true
+
+      - name: Remove test container
+        if: always()
+        run: docker rm -f cw12a-ci >/dev/null 2>&1 || true
+
+  publish:
+    needs: [prepare, build, test]
+    runs-on: self-hosted
+    outputs:
+      image_digest: ${{ steps.release.outputs.image_digest }}
+    steps:
+      - name: Download and load weather image
+        uses: actions/download-artifact@v4
+        with:
+          name: cw12a-weather-image
+
+      - name: Verify exact image
+        env:
+          CI_IMAGE: ${{ needs.prepare.outputs.ci_image }}
+          EXPECTED_IMAGE_ID: ${{ needs.build.outputs.image_id }}
+        run: |
+          docker load -i image.tar
+          LOADED_IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$CI_IMAGE")
+          if [ "$LOADED_IMAGE_ID" != "$EXPECTED_IMAGE_ID" ]; then
+            echo "ID obrazu sie nie zgadza: $LOADED_IMAGE_ID != $EXPECTED_IMAGE_ID" >&2
+            exit 1
+          fi
+
+      - name: Login to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+
+      - name: Tag and publish image
+        id: release
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKER_IMAGE_NAME: ${{ vars.DOCKER_IMAGE_NAME }}
+          CI_IMAGE: ${{ needs.prepare.outputs.ci_image }}
+          IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+          SHA_TAG: ${{ needs.prepare.outputs.sha_tag }}
+        run: |
+          STUDENT_TAG="$DOCKERHUB_USERNAME/$DOCKER_IMAGE_NAME:$IMAGE_TAG"
+          SHA_IMAGE="$DOCKERHUB_USERNAME/$DOCKER_IMAGE_NAME:$SHA_TAG"
+          docker tag "$CI_IMAGE" "$STUDENT_TAG"
+          docker tag "$CI_IMAGE" "$SHA_IMAGE"
+          PUSH_OUTPUT=$(docker push "$STUDENT_TAG")
+          printf '%s\n' "$PUSH_OUTPUT"
+          docker push "$SHA_IMAGE"
+          DIGEST=$(printf '%s\n' "$PUSH_OUTPUT" | sed -n 's/.*digest: \(sha256:[0-9a-f]*\).*/\1/p' | head -n 1)
+          if [ -z "$DIGEST" ]; then
+            echo "Nie udało sie odczytac digestu obrazu." >&2
+            exit 1
+          fi
+          echo "image_digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: [prepare, publish]
+    runs-on: ${{ fromJSON(needs.prepare.outputs.runner_labels) }}
+    concurrency:
+      group: cw12a-${{ needs.prepare.outputs.container_name }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare private Docker login
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          DOCKER_CONFIG_DIR=$(mktemp -d)
+          echo "DOCKER_CONFIG=$DOCKER_CONFIG_DIR" >> "$GITHUB_ENV"
+          export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+
+      - name: Pull published image
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKER_IMAGE_NAME: ${{ vars.DOCKER_IMAGE_NAME }}
+          IMAGE_DIGEST: ${{ needs.publish.outputs.image_digest }}
+        run: |
+          docker pull "$DOCKERHUB_USERNAME/$DOCKER_IMAGE_NAME@$IMAGE_DIGEST"
+
+      - name: Replace container
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKER_IMAGE_NAME: ${{ vars.DOCKER_IMAGE_NAME }}
+          IMAGE_DIGEST: ${{ needs.publish.outputs.image_digest }}
+          CONTAINER_NAME: ${{ needs.prepare.outputs.container_name }}
+          DEPLOYMENT_TARGET: ${{ needs.prepare.outputs.deployment_target }}
+          APP_PORT: ${{ needs.prepare.outputs.app_port }}
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+        run: |
+          existing=$(docker ps -a --filter "name=^/${CONTAINER_NAME}$" --format '{{.Names}}')
+          if [ "$existing" = "$CONTAINER_NAME" ]; then
+            docker rm -f "$CONTAINER_NAME"
+          fi
+
+          if [ "$DEPLOYMENT_TARGET" = "github" ]; then
+            docker run -d --name "$CONTAINER_NAME" \
+              -p "127.0.0.1:${APP_PORT}:8080" \
+              -e OPENWEATHER_API_KEY="$OPENWEATHER_API_KEY" \
+              "$DOCKERHUB_USERNAME/$DOCKER_IMAGE_NAME@$IMAGE_DIGEST"
+          else
+            docker run -d --name "$CONTAINER_NAME" \
+              --restart unless-stopped \
+              -p "${APP_PORT}:8080" \
+              -e OPENWEATHER_API_KEY="$OPENWEATHER_API_KEY" \
+              "$DOCKERHUB_USERNAME/$DOCKER_IMAGE_NAME@$IMAGE_DIGEST"
+          fi
+
+      - name: Verify deploy and set base URL
+        id: ready
+        env:
+          CONTAINER_NAME: ${{ needs.prepare.outputs.container_name }}
+          APP_PORT: ${{ needs.prepare.outputs.app_port }}
+        run: |
+          ready=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error "http://127.0.0.1:${APP_PORT}/healthz" >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != "true" ]; then
+            echo "Deploy nie stal sie gotowy." >&2
+            docker logs "$CONTAINER_NAME" || true
+            exit 1
+          fi
+          docker inspect --format '{{.State.Running}}' "$CONTAINER_NAME" | grep -q '^true$'
+          echo "base_url=http://127.0.0.1:${APP_PORT}" >> "$GITHUB_OUTPUT"
+
+      - name: Run deployed weather smoke test
+        env:
+          WEATHER_CITY: ${{ needs.prepare.outputs.weather_city }}
+        run: |
+          python3 CWICZENIA/12A-Cwiczenia-pipeline-gha/pogoda_python_flusk/tests/smoke_test.py \
+            --base-url "${{ steps.ready.outputs.base_url }}" \
+            --city "$WEATHER_CITY"
+
+      - name: Write deployment summary
+        if: always()
+        env:
+          DEPLOYMENT_TARGET: ${{ needs.prepare.outputs.deployment_target }}
+          CONTAINER_NAME: ${{ needs.prepare.outputs.container_name }}
+          APP_PORT: ${{ needs.prepare.outputs.app_port }}
+          WEATHER_CITY: ${{ needs.prepare.outputs.weather_city }}
+          IMAGE_DIGEST: ${{ needs.publish.outputs.image_digest }}
+          BASE_URL: ${{ steps.ready.outputs.base_url }}
+        run: |
+          {
+            echo "## CW12A deploy"
+            echo ""
+            echo "- Target: \`$DEPLOYMENT_TARGET\`"
+            echo "- Container: \`$CONTAINER_NAME\`"
+            echo "- City: \`$WEATHER_CITY\`"
+            echo "- Local base URL: \`${BASE_URL:-http://127.0.0.1:${APP_PORT}}\`"
+            echo "- Image digest: \`$IMAGE_DIGEST\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup Docker login and temporary container
+        if: always()
+        env:
+          DEPLOYMENT_TARGET: ${{ needs.prepare.outputs.deployment_target }}
+          CONTAINER_NAME: ${{ needs.prepare.outputs.container_name }}
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+        run: |
+          if [ -n "${DOCKER_CONFIG:-}" ]; then
+            docker logout "$DOCKERHUB_USERNAME" >/dev/null 2>&1 || true
+            rm -rf "$DOCKER_CONFIG"
+          fi
+          if [ "$DEPLOYMENT_TARGET" = "github" ]; then
+            docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+          fi
