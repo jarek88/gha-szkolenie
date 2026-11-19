@@ -124,9 +124,19 @@ jobs:
           path: ${{ env.APP_DIR }}
       - run: docker load -i "${APP_DIR}/image.tar"
       - name: Validate environment tag
+        env:
+          TARGET_ENVIRONMENT: ${{ matrix.environment }}
+          ENVIRONMENT_TAG: ${{ vars.FAZA3_IMAGE_TAG }}
         run: |
-          test -n "${{ vars.FAZA3_IMAGE_TAG }}"
-          echo "ENVIRONMENT_IMAGE_TAG=${{ vars.FAZA3_IMAGE_TAG }}" >> "$GITHUB_ENV"
+          case "$TARGET_ENVIRONMENT" in
+            test) DEFAULT_TAG="faza3-test" ;;
+            dev) DEFAULT_TAG="faza3-dev" ;;
+            prod) DEFAULT_TAG="faza3-prod" ;;
+            *) echo "Nieznane środowisko: $TARGET_ENVIRONMENT" >&2; exit 1 ;;
+          esac
+          TAG="${ENVIRONMENT_TAG:-$DEFAULT_TAG}"
+          test -n "$TAG"
+          echo "ENVIRONMENT_IMAGE_TAG=$TAG" >> "$GITHUB_ENV"
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: ${{ vars.DOCKERHUB_USERNAME || 'piotrskoska' }}
@@ -183,12 +193,35 @@ jobs:
         env:
           OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
           TARGET_ENVIRONMENT: ${{ matrix.environment }}
-          IMAGE_TAG: ${{ vars.FAZA3_IMAGE_TAG }}
-          APP_PORT: ${{ vars.FAZA3_APP_PORT }}
-          CONTAINER_NAME: ${{ vars.FAZA3_CONTAINER_NAME }}
+          ENVIRONMENT_TAG: ${{ vars.FAZA3_IMAGE_TAG }}
+          ENVIRONMENT_APP_PORT: ${{ vars.FAZA3_APP_PORT }}
+          ENVIRONMENT_CONTAINER_NAME: ${{ vars.FAZA3_CONTAINER_NAME }}
           WEATHER_CITY: ${{ vars.FAZA3_WEATHER_CITY || 'Warsaw' }}
         run: |
           test -n "$OPENWEATHER_API_KEY"
+          case "$TARGET_ENVIRONMENT" in
+            test)
+              DEFAULT_TAG="faza3-test"; DEFAULT_PORT="18093"; DEFAULT_CONTAINER="pogoda_api_faza3_test"
+              ;;
+            dev)
+              DEFAULT_TAG="faza3-dev"; DEFAULT_PORT="18094"; DEFAULT_CONTAINER="pogoda_api_faza3_dev"
+              ;;
+            prod)
+              DEFAULT_TAG="faza3-prod"; DEFAULT_PORT="18095"; DEFAULT_CONTAINER="pogoda_api_faza3_prod"
+              ;;
+            *) echo "Nieznane środowisko: $TARGET_ENVIRONMENT" >&2; exit 1 ;;
+          esac
+          IMAGE_TAG="${ENVIRONMENT_TAG:-$DEFAULT_TAG}"
+          APP_PORT="${ENVIRONMENT_APP_PORT:-$DEFAULT_PORT}"
+          CONTAINER_NAME="${ENVIRONMENT_CONTAINER_NAME:-$DEFAULT_CONTAINER}"
+          test -n "$APP_PORT" && test -n "$CONTAINER_NAME"
+          case "$APP_PORT" in ''|*[!0-9]*|'0') echo "Niepoprawny port: $APP_PORT" >&2; exit 1 ;; esac
+          if [ "$APP_PORT" -lt 1 ] || [ "$APP_PORT" -gt 65535 ]; then
+            echo "Port musi nalezec do zakresu 1-65535." >&2
+            exit 1
+          fi
+          echo "APP_PORT=$APP_PORT" >> "$GITHUB_ENV"
+          echo "CONTAINER_NAME=$CONTAINER_NAME" >> "$GITHUB_ENV"
           jq -e --arg env "$TARGET_ENVIRONMENT" --arg tag "$IMAGE_TAG" \
             --arg commit "$GITHUB_SHA" --argjson run "$GITHUB_RUN_ID" \
             '.environment==$env and .image_tag==$tag and .commit==$commit and .run_id==$run and (.image_digest|test("^sha256:[a-f0-9]{64}$"))' \
@@ -212,8 +245,6 @@ jobs:
       - name: Replace container and test
         env:
           OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
-          APP_PORT: ${{ vars.FAZA3_APP_PORT }}
-          CONTAINER_NAME: ${{ vars.FAZA3_CONTAINER_NAME }}
           WEATHER_CITY: ${{ vars.FAZA3_WEATHER_CITY || 'Warsaw' }}
         run: |
           docker pull "$IMAGE_REFERENCE"
