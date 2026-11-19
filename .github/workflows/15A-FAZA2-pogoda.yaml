@@ -16,7 +16,7 @@ permissions:
 defaults:
   run:
     shell: bash
-    #working-directory: ./CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk
+    working-directory: .
 
 env:
   APP_DIR: ${{ github.workspace }}/CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk
