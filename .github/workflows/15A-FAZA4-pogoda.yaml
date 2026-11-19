@@ -247,7 +247,33 @@ jobs:
           for command in jq realpath stat sha256sum cmp terraform; do command -v "$command" >/dev/null || exit 1; done
           STATE_ROOT="${{ vars.FAZA4_STATE_ROOT }}"
           STUDENT="${{ vars.FAZA4_STUDENT_NAME }}"
-          test -n "$STATE_ROOT" && test -f "$STATE_ROOT/.faza4-state-root"
+          if [ -z "$STATE_ROOT" ]; then
+            echo "Brakuje Repository variable FAZA4_STATE_ROOT." >&2
+            exit 1
+          fi
+          case "$STATE_ROOT" in
+            /*) ;;
+            *)
+              echo "FAZA4_STATE_ROOT musi byc pelna sciezka absolutna: $STATE_ROOT" >&2
+              exit 1
+              ;;
+          esac
+          if [ -z "$STUDENT" ]; then
+            echo "Brakuje Repository variable FAZA4_STUDENT_NAME." >&2
+            exit 1
+          fi
+          if [ ! -f "$STATE_ROOT/.faza4-state-root" ]; then
+            echo "Brak znacznika stanu $STATE_ROOT/.faza4-state-root. Przygotuj katalog krokiem 3 README." >&2
+            exit 1
+          fi
+          if [ ! -d "$STATE_ROOT" ]; then
+            echo "FAZA4_STATE_ROOT nie jest katalogiem: $STATE_ROOT" >&2
+            exit 1
+          fi
+          if [ ! -w "$STATE_ROOT" ]; then
+            echo "Konto runnera nie ma uprawnien zapisu do $STATE_ROOT." >&2
+            exit 1
+          fi
           BASE="$STATE_ROOT/${{ github.repository_id }}/$STUDENT"
           WORKSPACE_DIR="$BASE/workspaces/$TARGET_ENVIRONMENT"
           RUN_DIR="$BASE/runs/${{ github.run_id }}/$TARGET_ENVIRONMENT"
@@ -270,7 +296,7 @@ jobs:
           FAZA4_REGION: ${{ vars.FAZA4_REGION || 'fra1' }}
           FAZA4_DROPLET_SIZE: ${{ vars.FAZA4_DROPLET_SIZE || 's-1vcpu-1gb' }}
           FAZA4_SSH_ALLOWED_CIDR: ${{ vars.FAZA4_SSH_ALLOWED_CIDR }}
-          FAZA4_STUDENT_NAME: ${{ vars.FAZA4_STUDENT_NAME }}
+          FAZA4_STUDENT_NAME: ${{ vars.FAZA4_STUDENT_NAME}}
         run: |
           jq -e --arg env "$TARGET_ENVIRONMENT" --arg commit "$GITHUB_SHA" --argjson run "$GITHUB_RUN_ID" \
             '.environment==$env and .commit==$commit and .run_id==$run and (.image_digest|test("^sha256:[a-f0-9]{64}$"))' \
