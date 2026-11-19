@@ -57,13 +57,15 @@ jobs:
           fi
 
       - name: Save CI image artifact
-        run: docker save "$CI_IMAGE" -o image.tar
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/${APP_DIR}"
+          docker save "$CI_IMAGE" -o "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
 
       - name: Upload weather image
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: faza1-weather-image
-          path: ${{ env.APP_DIR }}/image.tar
+          path: ${{ github.workspace }}/CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk/image.tar
           if-no-files-found: error
           retention-days: 1
 
@@ -84,7 +86,7 @@ jobs:
           path: ${{ env.APP_DIR }}
 
       - name: Load weather image
-        run: docker load -i "${APP_DIR}/image.tar"
+        run: docker load -i "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
 
       - name: Start tested container
         env:
@@ -135,7 +137,7 @@ jobs:
           path: ${{ env.APP_DIR }}
 
       - name: Load tested image
-        run: docker load -i "${APP_DIR}/image.tar"
+        run: docker load -i "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
 
       - name: Login to Docker Hub
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
