@@ -166,15 +166,15 @@ jobs:
           printf '%s\n%s\n' "$OUT1" "$OUT2"
           DIGEST=$(printf '%s\n%s\n' "$OUT1" "$OUT2" | grep -oE 'sha256:[a-f0-9]{64}' | head -n 1)
           test -n "$DIGEST"
-          mkdir -p release-metadata
+          mkdir -p "${GITHUB_WORKSPACE}/release-metadata"
           jq -n --arg environment "$TARGET_ENVIRONMENT" --arg tag "$ENVIRONMENT_IMAGE_TAG" \
             --arg digest "$DIGEST" --arg commit "$GITHUB_SHA" --argjson run_id "$GITHUB_RUN_ID" \
             '{environment:$environment,image_tag:$tag,image_digest:$digest,commit:$commit,run_id:$run_id}' \
-            > release-metadata/release.json
+            > "${GITHUB_WORKSPACE}/release-metadata/release.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: faza4-release-${{ matrix.environment }}
-          path: ${{ env.APP_DIR }}/release-metadata/release.json
+          path: ${{ github.workspace }}/release-metadata/release.json
           overwrite: true
           if-no-files-found: error
 
@@ -204,7 +204,8 @@ jobs:
         run: |
           test -n "$OPENWEATHER_API_KEY"
           DIGEST=$(jq -er '.image_digest | select(test("^sha256:[a-f0-9]{64}$"))' release-metadata/release.json)
-          jq -e --arg tag "${{ vars.FAZA3_IMAGE_TAG }}" --arg commit "$GITHUB_SHA" \
+          TAG="${{ vars.FAZA3_IMAGE_TAG || 'faza3-test' }}"
+          jq -e --arg tag "$TAG" --arg commit "$GITHUB_SHA" \
             --argjson run "$GITHUB_RUN_ID" \
             '.environment=="test" and .image_tag==$tag and .commit==$commit and .run_id==$run' \
             release-metadata/release.json >/dev/null
@@ -278,7 +279,7 @@ jobs:
           TAG="$(jq -r '.image_tag' release-metadata/release.json)"
           HOST_KEY="${{ vars.FAZA4_SSH_HOST_KEY }}"
           mkdir -p "$WORKDIR"
-          cp -a "${GITHUB_WORKSPACE}/${{ env.TERRAFORM_DIR }}/." "$WORKDIR/"
+          cp -a "${TERRAFORM_DIR}/." "$WORKDIR/"
           jq -n \
             --arg environment "$TARGET_ENVIRONMENT" \
             --arg student_name "$FAZA4_STUDENT_NAME" \
@@ -492,9 +493,9 @@ jobs:
               TF_DATA_DIR="$RUN_DIR/tfdata"
               mkdir -p "$RUN_DIR"
               chmod 700 "$RUN_DIR"
-              cp -a "${GITHUB_WORKSPACE}/${{ env.TERRAFORM_DIR }}/." "$RUN_DIR/code" 2>/dev/null || {
+              cp -a "${TERRAFORM_DIR}/." "$RUN_DIR/code" 2>/dev/null || {
                 mkdir -p "$RUN_DIR/code"
-                cp -a "${GITHUB_WORKSPACE}/${{ env.TERRAFORM_DIR }}/." "$RUN_DIR/code"
+                cp -a "${TERRAFORM_DIR}/." "$RUN_DIR/code"
               }
               export TF_DATA_DIR
               cd "$RUN_DIR/code"
