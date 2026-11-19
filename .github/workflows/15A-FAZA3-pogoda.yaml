@@ -30,7 +30,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -67,7 +67,7 @@ jobs:
 
   test:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -107,7 +107,7 @@ jobs:
   build-and-push:
     needs: test
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_name == (vars.FAZA3_DEPLOY_BRANCH || 'main')) }}
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 15
     environment: ${{ matrix.environment }}
     strategy:
