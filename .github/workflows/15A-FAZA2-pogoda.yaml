@@ -23,7 +23,7 @@ env:
   HUB_IMAGE_BASE: ${{ format('{0}/{1}', vars.DOCKERHUB_USERNAME || 'piotrskoska', vars.DOCKER_IMAGE_NAME || 'python_pogoda') }}
   CI_IMAGE: ${{ format('{0}/{1}:ci-faza2-{2}', vars.DOCKERHUB_USERNAME || 'piotrskoska', vars.DOCKER_IMAGE_NAME || 'python_pogoda', github.sha) }}
   IMAGE_TAG: ${{ vars.FAZA2_IMAGE_TAG || 'faza2' }}
-  APP_PORT: ${{ vars.FAZA2_APP_PORT || '18092' }}
+  APP_PORT: ${{ vars.FAZA2_APP_PORT || '18082' }}
   CONTAINER_NAME: ${{ vars.FAZA2_CONTAINER_NAME || 'pogoda_api_faza2' }}
   WEATHER_CITY: ${{ vars.FAZA2_WEATHER_CITY || 'Warsaw' }}
 
