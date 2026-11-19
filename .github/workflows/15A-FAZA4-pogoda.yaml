@@ -136,11 +136,16 @@ jobs:
       - name: Resolve environment tag
         env:
           TARGET_ENVIRONMENT: ${{ matrix.environment }}
+          FAZA3_TEST_TAG: ${{ vars.FAZA3_IMAGE_TAG || 'faza3-test' }}
+          FAZA4_ENV_TAG: ${{ vars.FAZA4_IMAGE_TAG }}
         run: |
           if [ "$TARGET_ENVIRONMENT" = test ]; then
-            TAG="${{ vars.FAZA3_IMAGE_TAG }}"
+            TAG="$FAZA3_TEST_TAG"
           else
-            TAG="${{ vars.FAZA4_IMAGE_TAG }}"
+            TAG="$FAZA4_ENV_TAG"
+            if [ -z "$TAG" ]; then
+              TAG="faza4-$TARGET_ENVIRONMENT"
+            fi
           fi
           test -n "$TAG"
           echo "ENVIRONMENT_IMAGE_TAG=$TAG" >> "$GITHUB_ENV"
