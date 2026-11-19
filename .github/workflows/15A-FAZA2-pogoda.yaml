@@ -19,7 +19,7 @@ defaults:
     #working-directory: ./CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk
 
 env:
-  APP_DIR: ./CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk
+  APP_DIR: ${{ github.workspace }}/CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk
   HUB_IMAGE_BASE: ${{ format('{0}/{1}', vars.DOCKERHUB_USERNAME || 'piotrskoska', vars.DOCKER_IMAGE_NAME || 'python_pogoda') }}
   CI_IMAGE: ${{ format('{0}/{1}:ci-faza2-{2}', vars.DOCKERHUB_USERNAME || 'piotrskoska', vars.DOCKER_IMAGE_NAME || 'python_pogoda', github.sha) }}
   IMAGE_TAG: ${{ vars.FAZA2_IMAGE_TAG || 'faza2' }}
@@ -63,8 +63,8 @@ jobs:
 
       - name: Save CI image artifact
         run: |
-          mkdir -p "${GITHUB_WORKSPACE}/${APP_DIR}"
-          docker save "$CI_IMAGE" -o "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
+          mkdir -p "${APP_DIR}"
+          docker save "$CI_IMAGE" -o "${APP_DIR}/image.tar"
 
       - name: Upload weather image
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -91,7 +91,7 @@ jobs:
           path: ${{ env.APP_DIR }}
 
       - name: Load weather image
-        run: docker load -i "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
+        run: docker load -i "${APP_DIR}/image.tar"
 
       - name: Start tested container
         env:
@@ -142,7 +142,7 @@ jobs:
           path: ${{ env.APP_DIR }}
 
       - name: Load tested image
-        run: docker load -i "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
+        run: docker load -i "${APP_DIR}/image.tar"
 
       - name: Login to Docker Hub
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3

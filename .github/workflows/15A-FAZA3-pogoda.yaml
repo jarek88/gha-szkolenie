@@ -20,10 +20,10 @@ concurrency:
 defaults:
   run:
     shell: bash
-    working-directory: ./CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk
+    working-directory: .
 
 env:
-  APP_DIR: ./CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk
+  APP_DIR: ${{ github.workspace }}/CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk
   HUB_IMAGE_BASE: ${{ format('{0}/{1}', vars.DOCKERHUB_USERNAME || 'piotrskoska', vars.DOCKER_IMAGE_NAME || 'python_pogoda') }}
   CI_IMAGE: ${{ format('{0}/{1}:ci-faza3-{2}', vars.DOCKERHUB_USERNAME || 'piotrskoska', vars.DOCKER_IMAGE_NAME || 'python_pogoda', github.sha) }}
   WEATHER_CITY: ${{ vars.FAZA3_WEATHER_CITY || 'Warsaw' }}
@@ -56,7 +56,7 @@ jobs:
             echo "OPENWEATHER_API_KEY zostal ustawiony w metadanych obrazu." >&2
             exit 1
           fi
-          docker save "$CI_IMAGE" -o "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
+          docker save "$CI_IMAGE" -o "${APP_DIR}/image.tar"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: faza3-weather-image
@@ -77,7 +77,7 @@ jobs:
         with:
           name: faza3-weather-image
           path: ${{ env.APP_DIR }}
-      - run: docker load -i "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
+      - run: docker load -i "${APP_DIR}/image.tar"
       - name: Start test container
         env:
           OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
@@ -88,8 +88,15 @@ jobs:
             -p 127.0.0.1:18093:8080 -e OPENWEATHER_API_KEY "$CI_IMAGE"
       - name: Wait and smoke test
         run: |
-          curl --fail --silent --show-error --retry 30 --retry-all-errors --retry-delay 2 \
-            http://127.0.0.1:18093/healthz
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:18093/healthz >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              exit 1
+            fi
+            sleep 2
+          done
           python3 "${APP_DIR}/tests/smoke_test.py" \
             --base-url http://127.0.0.1:18093 --city "$WEATHER_CITY"
       - if: failure()
@@ -115,7 +122,7 @@ jobs:
         with:
           name: faza3-weather-image
           path: ${{ env.APP_DIR }}
-      - run: docker load -i "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
+      - run: docker load -i "${APP_DIR}/image.tar"
       - name: Validate environment tag
         run: |
           test -n "${{ vars.FAZA3_IMAGE_TAG }}"
