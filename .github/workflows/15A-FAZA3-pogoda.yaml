@@ -30,7 +30,7 @@ env:
 
 jobs:
   build:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -67,7 +67,7 @@ jobs:
 
   test:
     needs: build
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -107,7 +107,7 @@ jobs:
   build-and-push:
     needs: test
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_name == (vars.FAZA3_DEPLOY_BRANCH || 'main')) }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: ${{ matrix.environment }}
     strategy:
@@ -156,15 +156,15 @@ jobs:
           DIGEST=$(printf '%s\n%s\n' "$PUSH_OUTPUT" "$SHA_OUTPUT" |
             grep -oE 'sha256:[a-f0-9]{64}' | head -n 1)
           test -n "$DIGEST"
-          mkdir -p release-metadata
+          mkdir -p "${GITHUB_WORKSPACE}/release-metadata"
           jq -n --arg environment "$TARGET_ENVIRONMENT" --arg image_tag "$ENVIRONMENT_IMAGE_TAG" \
             --arg image_digest "$DIGEST" --arg commit "$GITHUB_SHA" --argjson run_id "$GITHUB_RUN_ID" \
             '{environment:$environment,image_tag:$image_tag,image_digest:$image_digest,commit:$commit,run_id:$run_id}' \
-            > release-metadata/release.json
+            > "${GITHUB_WORKSPACE}/release-metadata/release.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: faza3-release-${{ matrix.environment }}
-          path: ${{ env.APP_DIR }}/release-metadata/release.json
+          path: ${{ github.workspace }}/release-metadata/release.json
           overwrite: true
           if-no-files-found: error
 
