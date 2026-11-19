@@ -1,0 +1,503 @@
+name: 15A FAZA-4 — Terraform workspaces i DigitalOcean
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Deploy infrastructure or destroy dev and prod
+        required: true
+        type: choice
+        default: deploy
+        options:
+          - deploy
+          - destroy
+  push:
+    branches:
+      - main
+    paths:
+      - CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk/**
+      - CWICZENIA/15A-Cwiczenia-pipeline-gha/FAZA-4/**
+      - .github/workflows/15A-FAZA4-pogoda.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pogoda-faza4-${{ github.repository_id }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+    working-directory: ./CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk
+
+env:
+  APP_DIR: ./CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk
+  TERRAFORM_DIR: ./CWICZENIA/15A-Cwiczenia-pipeline-gha/FAZA-4/terraform
+  HUB_IMAGE_BASE: ${{ format('{0}/{1}', vars.DOCKERHUB_USERNAME || 'piotrskoska', vars.DOCKER_IMAGE_NAME || 'python_pogoda') }}
+  CI_IMAGE: ${{ format('{0}/{1}:ci-faza4-{2}', vars.DOCKERHUB_USERNAME || 'piotrskoska', vars.DOCKER_IMAGE_NAME || 'python_pogoda', github.sha) }}
+  WEATHER_CITY: ${{ vars.FAZA4_WEATHER_CITY || 'Warsaw' }}
+
+jobs:
+  build:
+    if: ${{ inputs.operation != 'destroy' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          version: latest
+          driver: docker-container
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ env.APP_DIR }}
+          file: ${{ env.APP_DIR }}/Dockerfile
+          load: true
+          push: false
+          tags: ${{ env.CI_IMAGE }}
+          cache-from: type=gha,version=2,scope=15a-pogoda-faza4
+          cache-to: type=gha,version=2,scope=15a-pogoda-faza4,mode=max
+      - name: Verify and save image
+        run: |
+          if docker inspect "$CI_IMAGE" --format '{{json .Config.Env}}' | grep -F 'OPENWEATHER_API_KEY='; then
+            echo "OPENWEATHER_API_KEY is present in image metadata" >&2
+            exit 1
+          fi
+          docker save "$CI_IMAGE" -o "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: faza4-weather-image
+          path: ${{ github.workspace }}/CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk/image.tar
+          overwrite: true
+          retention-days: 1
+          if-no-files-found: error
+
+  test:
+    if: ${{ inputs.operation != 'destroy' }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: faza4-weather-image
+          path: ${{ env.APP_DIR }}
+      - run: docker load -i "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
+      - name: Run real weather test
+        env:
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+        run: |
+          test -n "$OPENWEATHER_API_KEY"
+          docker rm -f pogoda_api_faza4_ci >/dev/null 2>&1 || true
+          docker run -d --name pogoda_api_faza4_ci -p 127.0.0.1:18096:8080 \
+            -e OPENWEATHER_API_KEY "$CI_IMAGE"
+          curl --fail --silent --show-error --retry 30 --retry-all-errors --retry-delay 2 \
+            http://127.0.0.1:18096/healthz
+          python3 "${APP_DIR}/tests/smoke_test.py" \
+            --base-url http://127.0.0.1:18096 --city "$WEATHER_CITY"
+      - if: failure()
+        run: docker logs pogoda_api_faza4_ci || true
+      - if: always()
+        run: docker rm -f pogoda_api_faza4_ci >/dev/null 2>&1 || true
+
+  publish:
+    if: ${{ inputs.operation != 'destroy' }}
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [test, dev, prod]
+    environment: ${{ matrix.environment }}
+    concurrency:
+      group: pogoda-faza4-publish-${{ matrix.environment }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: faza4-weather-image
+          path: ${{ env.APP_DIR }}
+      - run: docker load -i "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
+      - name: Resolve environment tag
+        env:
+          TARGET_ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          if [ "$TARGET_ENVIRONMENT" = test ]; then
+            TAG="${{ vars.FAZA3_IMAGE_TAG }}"
+          else
+            TAG="${{ vars.FAZA4_IMAGE_TAG }}"
+          fi
+          test -n "$TAG"
+          echo "ENVIRONMENT_IMAGE_TAG=$TAG" >> "$GITHUB_ENV"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME || 'piotrskoska' }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Push and save release metadata
+        env:
+          TARGET_ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          TAG_IMAGE="${HUB_IMAGE_BASE}:${ENVIRONMENT_IMAGE_TAG}"
+          SHA_IMAGE="${HUB_IMAGE_BASE}:${ENVIRONMENT_IMAGE_TAG}-${GITHUB_SHA}"
+          docker tag "$CI_IMAGE" "$TAG_IMAGE"
+          docker tag "$CI_IMAGE" "$SHA_IMAGE"
+          OUT1=$(docker push "$TAG_IMAGE")
+          OUT2=$(docker push "$SHA_IMAGE")
+          printf '%s\n%s\n' "$OUT1" "$OUT2"
+          DIGEST=$(printf '%s\n%s\n' "$OUT1" "$OUT2" | grep -oE 'sha256:[a-f0-9]{64}' | head -n 1)
+          test -n "$DIGEST"
+          mkdir -p release-metadata
+          jq -n --arg environment "$TARGET_ENVIRONMENT" --arg tag "$ENVIRONMENT_IMAGE_TAG" \
+            --arg digest "$DIGEST" --arg commit "$GITHUB_SHA" --argjson run_id "$GITHUB_RUN_ID" \
+            '{environment:$environment,image_tag:$tag,image_digest:$digest,commit:$commit,run_id:$run_id}' \
+            > release-metadata/release.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: faza4-release-${{ matrix.environment }}
+          path: ${{ env.APP_DIR }}/release-metadata/release.json
+          overwrite: true
+          if-no-files-found: error
+
+  deploy-test:
+    if: ${{ inputs.operation != 'destroy' }}
+    needs: publish
+    runs-on: [self-hosted, linux]
+    environment: test
+    timeout-minutes: 15
+    concurrency:
+      group: pogoda-faza3-deploy-test
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: faza4-release-test
+          path: release-metadata
+      - name: Deploy test container
+        env:
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+          APP_PORT: ${{ vars.FAZA3_APP_PORT || '18093' }}
+          CONTAINER_NAME: ${{ vars.FAZA3_CONTAINER_NAME || 'pogoda_api_faza3_test' }}
+          WEATHER_CITY: ${{ vars.FAZA3_WEATHER_CITY || 'Warsaw' }}
+        run: |
+          test -n "$OPENWEATHER_API_KEY"
+          DIGEST=$(jq -er '.image_digest | select(test("^sha256:[a-f0-9]{64}$"))' release-metadata/release.json)
+          jq -e --arg tag "${{ vars.FAZA3_IMAGE_TAG }}" --arg commit "$GITHUB_SHA" \
+            --argjson run "$GITHUB_RUN_ID" \
+            '.environment=="test" and .image_tag==$tag and .commit==$commit and .run_id==$run' \
+            release-metadata/release.json >/dev/null
+          IMAGE_REFERENCE="${HUB_IMAGE_BASE}@${DIGEST}"
+          docker pull "$IMAGE_REFERENCE"
+          docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+          docker run -d --name "$CONTAINER_NAME" --restart unless-stopped \
+            -p "${APP_PORT}:8080" -e OPENWEATHER_API_KEY "$IMAGE_REFERENCE"
+          curl --fail --silent --show-error --retry 30 --retry-all-errors --retry-delay 2 \
+            "http://127.0.0.1:${APP_PORT}/healthz"
+          python3 "${APP_DIR}/tests/smoke_test.py" \
+            --base-url "http://127.0.0.1:${APP_PORT}" --city "$WEATHER_CITY"
+      - if: failure()
+        env:
+          CONTAINER_NAME: ${{ vars.FAZA3_CONTAINER_NAME || 'pogoda_api_faza3_test' }}
+        run: docker logs "$CONTAINER_NAME" || true
+
+  init:
+    if: ${{ inputs.operation != 'destroy' }}
+    needs: publish
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, prod]
+    environment: ${{ matrix.environment }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.17.2
+      - name: Prepare persistent Terraform paths
+        env:
+          TARGET_ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          for command in jq realpath stat sha256sum cmp terraform; do command -v "$command" >/dev/null || exit 1; done
+          STATE_ROOT="${{ vars.FAZA4_STATE_ROOT }}"
+          STUDENT="${{ vars.FAZA4_STUDENT_NAME }}"
+          test -n "$STATE_ROOT" && test -f "$STATE_ROOT/.faza4-state-root"
+          BASE="$STATE_ROOT/${{ github.repository_id }}/$STUDENT"
+          WORKSPACE_DIR="$BASE/workspaces/$TARGET_ENVIRONMENT"
+          RUN_DIR="$BASE/runs/${{ github.run_id }}/$TARGET_ENVIRONMENT"
+          TF_DATA_DIR="$RUN_DIR/tfdata"
+          mkdir -p "$WORKSPACE_DIR" "$RUN_DIR" "$TF_DATA_DIR"
+          chmod 700 "$BASE" "$WORKSPACE_DIR" "$RUN_DIR" "$TF_DATA_DIR"
+          echo "STATE_ROOT=$STATE_ROOT" >> "$GITHUB_ENV"
+          echo "WORKSPACE_DIR=$WORKSPACE_DIR" >> "$GITHUB_ENV"
+          echo "RUN_DIR=$RUN_DIR" >> "$GITHUB_ENV"
+          echo "TF_DATA_DIR=$TF_DATA_DIR" >> "$GITHUB_ENV"
+          echo "WORKDIR=$RUN_DIR/code" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: faza4-release-${{ matrix.environment }}
+          path: release-metadata
+      - name: Restore inputs and initialize
+        env:
+          TARGET_ENVIRONMENT: ${{ matrix.environment }}
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME || 'piotrskoska' }}
+          FAZA4_REGION: ${{ vars.FAZA4_REGION || 'fra1' }}
+          FAZA4_DROPLET_SIZE: ${{ vars.FAZA4_DROPLET_SIZE || 's-1vcpu-1gb' }}
+          FAZA4_SSH_ALLOWED_CIDR: ${{ vars.FAZA4_SSH_ALLOWED_CIDR }}
+          FAZA4_STUDENT_NAME: ${{ vars.FAZA4_STUDENT_NAME }}
+        run: |
+          jq -e --arg env "$TARGET_ENVIRONMENT" --arg commit "$GITHUB_SHA" --argjson run "$GITHUB_RUN_ID" \
+            '.environment==$env and .commit==$commit and .run_id==$run and (.image_digest|test("^sha256:[a-f0-9]{64}$"))' \
+            release-metadata/release.json >/dev/null
+          DIGEST=$(jq -r '.image_digest' release-metadata/release.json)
+          TAG="$(jq -r '.image_tag' release-metadata/release.json)"
+          HOST_KEY="${{ vars.FAZA4_SSH_HOST_KEY }}"
+          mkdir -p "$WORKDIR"
+          cp -a "${GITHUB_WORKSPACE}/${{ env.TERRAFORM_DIR }}/." "$WORKDIR/"
+          jq -n \
+            --arg environment "$TARGET_ENVIRONMENT" \
+            --arg student_name "$FAZA4_STUDENT_NAME" \
+            --arg region "$FAZA4_REGION" \
+            --arg droplet_size "$FAZA4_DROPLET_SIZE" \
+            --arg ssh_allowed_cidr "$FAZA4_SSH_ALLOWED_CIDR" \
+            --arg dockerhub_username "$DOCKERHUB_USERNAME" \
+            --arg image_reference "${HUB_IMAGE_BASE}@${DIGEST}" \
+            --arg deployment_id "$GITHUB_RUN_ID" \
+            --arg ssh_host_key "$HOST_KEY" \
+            '{environment:$environment,student_name:$student_name,region:$region,droplet_size:$droplet_size,
+              ssh_allowed_cidr:$ssh_allowed_cidr,dockerhub_username:$dockerhub_username,
+              image_reference:$image_reference,deployment_id:$deployment_id,
+              ssh_host_key:(if $ssh_host_key=="" then null else $ssh_host_key end)}' \
+            > "$RUN_DIR/terraform.tfvars.json"
+          sha256sum "$RUN_DIR/terraform.tfvars.json" | awk '{print $1}' > "$RUN_DIR/terraform.tfvars.sha256"
+          echo "$GITHUB_SHA" > "$RUN_DIR/commit.txt"
+          export TF_DATA_DIR="$TF_DATA_DIR"
+          cd "$WORKDIR"
+          terraform init -input=false -lock-timeout=30s
+          terraform workspace select -or-create "$TARGET_ENVIRONMENT"
+
+  validate:
+    if: ${{ inputs.operation != 'destroy' }}
+    needs: init
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, prod]
+    environment: ${{ matrix.environment }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.17.2
+      - name: Restore and validate Terraform
+        env:
+          TARGET_ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          STATE_ROOT="${{ vars.FAZA4_STATE_ROOT }}"
+          BASE="$STATE_ROOT/${{ github.repository_id }}/${{ vars.FAZA4_STUDENT_NAME }}"
+          RUN_DIR="$BASE/runs/${{ github.run_id }}/$TARGET_ENVIRONMENT"
+          export TF_DATA_DIR="$RUN_DIR/tfdata"
+          test -s "$RUN_DIR/terraform.tfvars.sha256"
+          test "$(sha256sum "$RUN_DIR/terraform.tfvars.json" | awk '{print $1}')" = "$(cat "$RUN_DIR/terraform.tfvars.sha256")"
+          test "$(cat "$RUN_DIR/commit.txt")" = "$GITHUB_SHA"
+          cd "$RUN_DIR/code"
+          terraform workspace select "$TARGET_ENVIRONMENT"
+          terraform validate -no-color
+
+  plan:
+    if: ${{ inputs.operation != 'destroy' }}
+    needs: validate
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, prod]
+    environment: ${{ matrix.environment }}
+    env:
+      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+      TF_VAR_openweather_api_key: ${{ secrets.OPENWEATHER_API_KEY }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.17.2
+      - name: Plan infrastructure
+        env:
+          TARGET_ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          test -n "$DIGITALOCEAN_TOKEN"
+          BASE="${{ vars.FAZA4_STATE_ROOT }}/${{ github.repository_id }}/${{ vars.FAZA4_STUDENT_NAME }}"
+          RUN_DIR="$BASE/runs/${{ github.run_id }}/$TARGET_ENVIRONMENT"
+          export TF_DATA_DIR="$RUN_DIR/tfdata"
+          cd "$RUN_DIR/code"
+          terraform workspace select "$TARGET_ENVIRONMENT"
+          terraform plan -input=false -lock-timeout=30s -var-file="$RUN_DIR/terraform.tfvars.json" \
+            -out="$RUN_DIR/terraform.tfplan" -no-color
+
+  apply:
+    if: ${{ inputs.operation != 'destroy' }}
+    needs: plan
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, prod]
+    environment: ${{ matrix.environment }}
+    env:
+      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+      TF_VAR_openweather_api_key: ${{ secrets.OPENWEATHER_API_KEY }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.17.2
+      - name: Apply saved plan
+        env:
+          TARGET_ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          test -n "$DIGITALOCEAN_TOKEN"
+          BASE="${{ vars.FAZA4_STATE_ROOT }}/${{ github.repository_id }}/${{ vars.FAZA4_STUDENT_NAME }}"
+          RUN_DIR="$BASE/runs/${{ github.run_id }}/$TARGET_ENVIRONMENT"
+          export TF_DATA_DIR="$RUN_DIR/tfdata"
+          cd "$RUN_DIR/code"
+          terraform workspace select "$TARGET_ENVIRONMENT"
+          terraform apply -input=false -lock-timeout=30s -no-color "$RUN_DIR/terraform.tfplan"
+          terraform output -no-color -json public_ip droplet_id app_url > "$RUN_DIR/outputs.json"
+          jq -e '.public_ip.value and .droplet_id.value and .app_url.value' "$RUN_DIR/outputs.json" >/dev/null
+          mkdir -p "$GITHUB_WORKSPACE/faza4-digitalocean-$TARGET_ENVIRONMENT"
+          jq -n \
+            --arg environment "$TARGET_ENVIRONMENT" \
+            --arg public_ip "$(jq -r '.public_ip.value' "$RUN_DIR/outputs.json")" \
+            --arg app_url "$(jq -r '.app_url.value' "$RUN_DIR/outputs.json")" \
+            --arg droplet_id "$(jq -r '.droplet_id.value' "$RUN_DIR/outputs.json")" \
+            --arg commit "$GITHUB_SHA" --argjson run_id "$GITHUB_RUN_ID" \
+            '{environment:$environment,public_ip:$public_ip,app_url:$app_url,droplet_id:$droplet_id,commit:$commit,run_id:$run_id}' \
+            > "$GITHUB_WORKSPACE/faza4-digitalocean-$TARGET_ENVIRONMENT/result.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: faza4-digitalocean-${{ matrix.environment }}
+          path: ${{ github.workspace }}/faza4-digitalocean-${{ matrix.environment }}/result.json
+          overwrite: true
+          if-no-files-found: error
+
+  verify-digitalocean:
+    if: ${{ inputs.operation != 'destroy' }}
+    needs: apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, prod]
+    environment: ${{ matrix.environment }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: faza4-release-${{ matrix.environment }}
+          path: release-metadata
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: faza4-digitalocean-${{ matrix.environment }}
+          path: digitalocean-result
+      - name: Verify public application
+        env:
+          TARGET_ENVIRONMENT: ${{ matrix.environment }}
+          WEATHER_CITY: ${{ vars.FAZA4_WEATHER_CITY || 'Warsaw' }}
+        run: |
+          jq -e --arg env "$TARGET_ENVIRONMENT" --arg commit "$GITHUB_SHA" --argjson run "$GITHUB_RUN_ID" \
+            '.environment==$env and .commit==$commit and .run_id==$run and (.public_ip|test("^([0-9]{1,3}\\.){3}[0-9]{1,3}$")) and (.app_url|test("^http://"))' \
+            digitalocean-result/result.json >/dev/null
+          jq -e --arg env "$TARGET_ENVIRONMENT" --arg commit "$GITHUB_SHA" --argjson run "$GITHUB_RUN_ID" \
+            '.environment==$env and .commit==$commit and .run_id==$run and (.image_digest|test("^sha256:[a-f0-9]{64}$"))' \
+            release-metadata/release.json >/dev/null
+          PUBLIC_IP=$(jq -r '.public_ip' digitalocean-result/result.json)
+          APP_URL=$(jq -r '.app_url' digitalocean-result/result.json)
+          test "$APP_URL" = "http://$PUBLIC_IP"
+          curl --fail --silent --show-error --retry 15 --retry-all-errors --retry-delay 2 \
+            "$APP_URL/healthz"
+          curl --fail --silent --show-error --get --data-urlencode "city=$WEATHER_CITY" \
+            "$APP_URL/api/weather"
+          python3 "${GITHUB_WORKSPACE}/${APP_DIR}/tests/smoke_test.py" \
+            --base-url "$APP_URL" --city "$WEATHER_CITY"
+          {
+            echo "## DigitalOcean $TARGET_ENVIRONMENT"
+            echo "- Droplet IP: \`$PUBLIC_IP\`"
+            echo "- Application: [$APP_URL]($APP_URL)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  destroy:
+    if: ${{ inputs.operation == 'destroy' }}
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 30
+    environment: prod
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.17.2
+      - name: Terraform destroy dev and prod
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+        run: |
+          test -n "$DIGITALOCEAN_TOKEN"
+          BASE="${{ vars.FAZA4_STATE_ROOT }}/${{ github.repository_id }}/${{ vars.FAZA4_STUDENT_NAME }}"
+          failed=0
+          for environment in dev prod; do
+            (
+              set -euo pipefail
+              STATE="$BASE/workspaces/$environment"
+              RUN_DIR="$BASE/runs/${{ github.run_id }}/$environment"
+              TF_DATA_DIR="$RUN_DIR/tfdata"
+              mkdir -p "$RUN_DIR"
+              chmod 700 "$RUN_DIR"
+              cp -a "${GITHUB_WORKSPACE}/${{ env.TERRAFORM_DIR }}/." "$RUN_DIR/code" 2>/dev/null || {
+                mkdir -p "$RUN_DIR/code"
+                cp -a "${GITHUB_WORKSPACE}/${{ env.TERRAFORM_DIR }}/." "$RUN_DIR/code"
+              }
+              export TF_DATA_DIR
+              cd "$RUN_DIR/code"
+              terraform init -input=false -lock-timeout=30s
+              terraform workspace select "$environment"
+              terraform validate -no-color
+              terraform destroy -input=false -auto-approve -lock-timeout=30s -no-color
+            ) >"$BASE/runs/${{ github.run_id }}/$environment.log" 2>&1 &
+            pid=$!
+            if wait "$pid"; then
+              echo "[$environment] destroy succeeded"
+            else
+              echo "[$environment] destroy failed"
+              failed=1
+            fi
+            cat "$BASE/runs/${{ github.run_id }}/$environment.log"
+          done
+          exit "$failed"

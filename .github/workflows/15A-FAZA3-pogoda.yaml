@@ -1,0 +1,230 @@
+name: 15A FAZA-3 — Matrix i Environments
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk/**
+      - .github/workflows/15A-FAZA3-pogoda.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pogoda-faza3-${{ github.repository_id }}-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+    working-directory: ./CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk
+
+env:
+  APP_DIR: ./CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk
+  HUB_IMAGE_BASE: ${{ format('{0}/{1}', vars.DOCKERHUB_USERNAME || 'piotrskoska', vars.DOCKER_IMAGE_NAME || 'python_pogoda') }}
+  CI_IMAGE: ${{ format('{0}/{1}:ci-faza3-{2}', vars.DOCKERHUB_USERNAME || 'piotrskoska', vars.DOCKER_IMAGE_NAME || 'python_pogoda', github.sha) }}
+  WEATHER_CITY: ${{ vars.FAZA3_WEATHER_CITY || 'Warsaw' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          version: latest
+          driver: docker-container
+      - name: Build CI image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ env.APP_DIR }}
+          file: ${{ env.APP_DIR }}/Dockerfile
+          load: true
+          push: false
+          tags: ${{ env.CI_IMAGE }}
+          cache-from: type=gha,version=2,scope=15a-pogoda-faza3
+          cache-to: type=gha,version=2,scope=15a-pogoda-faza3,mode=max
+      - name: Save and verify CI image
+        run: |
+          if docker inspect "$CI_IMAGE" --format '{{json .Config.Env}}' | grep -F 'OPENWEATHER_API_KEY='; then
+            echo "OPENWEATHER_API_KEY zostal ustawiony w metadanych obrazu." >&2
+            exit 1
+          fi
+          docker save "$CI_IMAGE" -o "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: faza3-weather-image
+          path: ${{ github.workspace }}/CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk/image.tar
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 1
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: faza3-weather-image
+          path: ${{ env.APP_DIR }}
+      - run: docker load -i "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
+      - name: Start test container
+        env:
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+        run: |
+          test -n "$OPENWEATHER_API_KEY"
+          docker rm -f pogoda_api_faza3_ci >/dev/null 2>&1 || true
+          docker run -d --name pogoda_api_faza3_ci \
+            -p 127.0.0.1:18093:8080 -e OPENWEATHER_API_KEY "$CI_IMAGE"
+      - name: Wait and smoke test
+        run: |
+          curl --fail --silent --show-error --retry 30 --retry-all-errors --retry-delay 2 \
+            http://127.0.0.1:18093/healthz
+          python3 "${APP_DIR}/tests/smoke_test.py" \
+            --base-url http://127.0.0.1:18093 --city "$WEATHER_CITY"
+      - if: failure()
+        run: docker logs pogoda_api_faza3_ci || true
+      - if: always()
+        run: docker rm -f pogoda_api_faza3_ci >/dev/null 2>&1 || true
+
+  build-and-push:
+    needs: test
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_name == (vars.FAZA3_DEPLOY_BRANCH || 'main')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ matrix.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [test, dev, prod]
+    concurrency:
+      group: pogoda-faza3-publish-${{ matrix.environment }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: faza3-weather-image
+          path: ${{ env.APP_DIR }}
+      - run: docker load -i "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
+      - name: Validate environment tag
+        run: |
+          test -n "${{ vars.FAZA3_IMAGE_TAG }}"
+          echo "ENVIRONMENT_IMAGE_TAG=${{ vars.FAZA3_IMAGE_TAG }}" >> "$GITHUB_ENV"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME || 'piotrskoska' }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Publish and create metadata
+        env:
+          TARGET_ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          TAG_IMAGE="${HUB_IMAGE_BASE}:${ENVIRONMENT_IMAGE_TAG}"
+          SHA_IMAGE="${HUB_IMAGE_BASE}:${ENVIRONMENT_IMAGE_TAG}-${GITHUB_SHA}"
+          docker tag "$CI_IMAGE" "$TAG_IMAGE"
+          docker tag "$CI_IMAGE" "$SHA_IMAGE"
+          PUSH_OUTPUT=$(docker push "$TAG_IMAGE")
+          printf '%s\n' "$PUSH_OUTPUT"
+          SHA_OUTPUT=$(docker push "$SHA_IMAGE")
+          printf '%s\n' "$SHA_OUTPUT"
+          DIGEST=$(printf '%s\n%s\n' "$PUSH_OUTPUT" "$SHA_OUTPUT" |
+            grep -oE 'sha256:[a-f0-9]{64}' | head -n 1)
+          test -n "$DIGEST"
+          mkdir -p release-metadata
+          jq -n --arg environment "$TARGET_ENVIRONMENT" --arg image_tag "$ENVIRONMENT_IMAGE_TAG" \
+            --arg image_digest "$DIGEST" --arg commit "$GITHUB_SHA" --argjson run_id "$GITHUB_RUN_ID" \
+            '{environment:$environment,image_tag:$image_tag,image_digest:$image_digest,commit:$commit,run_id:$run_id}' \
+            > release-metadata/release.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: faza3-release-${{ matrix.environment }}
+          path: ${{ env.APP_DIR }}/release-metadata/release.json
+          overwrite: true
+          if-no-files-found: error
+
+  deploy:
+    needs: build-and-push
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 15
+    environment: ${{ matrix.environment }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        environment: [test, dev, prod]
+    concurrency:
+      group: pogoda-faza3-deploy-${{ matrix.environment }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: faza3-release-${{ matrix.environment }}
+          path: release-metadata
+      - name: Verify release metadata and prepare deploy
+        env:
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+          TARGET_ENVIRONMENT: ${{ matrix.environment }}
+          IMAGE_TAG: ${{ vars.FAZA3_IMAGE_TAG }}
+          APP_PORT: ${{ vars.FAZA3_APP_PORT }}
+          CONTAINER_NAME: ${{ vars.FAZA3_CONTAINER_NAME }}
+          WEATHER_CITY: ${{ vars.FAZA3_WEATHER_CITY || 'Warsaw' }}
+        run: |
+          test -n "$OPENWEATHER_API_KEY"
+          jq -e --arg env "$TARGET_ENVIRONMENT" --arg tag "$IMAGE_TAG" \
+            --arg commit "$GITHUB_SHA" --argjson run "$GITHUB_RUN_ID" \
+            '.environment==$env and .image_tag==$tag and .commit==$commit and .run_id==$run and (.image_digest|test("^sha256:[a-f0-9]{64}$"))' \
+            release-metadata/release.json >/dev/null
+          case "$CONTAINER_NAME" in
+            pogoda_api_faza3_${TARGET_ENVIRONMENT}|pogoda_api_faza3_${TARGET_ENVIRONMENT}_*|pogoda_api_faza3_${TARGET_ENVIRONMENT}-*) ;;
+            *) echo "Niepoprawna nazwa kontenera." >&2; exit 1 ;;
+          esac
+          DIGEST=$(jq -r '.image_digest' release-metadata/release.json)
+          echo "IMAGE_REFERENCE=${HUB_IMAGE_BASE}@${DIGEST}" >> "$GITHUB_ENV"
+      - name: Prepare Docker login
+        run: |
+          DOCKER_CONFIG_DIR=$(mktemp -d "${RUNNER_TEMP}/faza3-${{ matrix.environment }}-docker-config.XXXXXX")
+          chmod 700 "$DOCKER_CONFIG_DIR"
+          echo "DOCKER_CONFIG=$DOCKER_CONFIG_DIR" >> "$GITHUB_ENV"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME || 'piotrskoska' }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          logout: false
+      - name: Replace container and test
+        env:
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+          APP_PORT: ${{ vars.FAZA3_APP_PORT }}
+          CONTAINER_NAME: ${{ vars.FAZA3_CONTAINER_NAME }}
+          WEATHER_CITY: ${{ vars.FAZA3_WEATHER_CITY || 'Warsaw' }}
+        run: |
+          docker pull "$IMAGE_REFERENCE"
+          docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+          docker run -d --name "$CONTAINER_NAME" --restart unless-stopped \
+            -p "${APP_PORT}:8080" -e OPENWEATHER_API_KEY "$IMAGE_REFERENCE"
+          curl --fail --silent --show-error --retry 30 --retry-all-errors --retry-delay 2 \
+            "http://127.0.0.1:${APP_PORT}/healthz"
+          python3 "${APP_DIR}/tests/smoke_test.py" \
+            --base-url "http://127.0.0.1:${APP_PORT}" --city "$WEATHER_CITY"
+      - if: failure()
+        env:
+          CONTAINER_NAME: ${{ vars.FAZA3_CONTAINER_NAME }}
+        run: docker logs "$CONTAINER_NAME" || true
+      - if: always()
+        run: |
+          docker logout >/dev/null 2>&1 || true
+          if [ -n "${DOCKER_CONFIG:-}" ] && [[ "$DOCKER_CONFIG" == "${RUNNER_TEMP}/faza3-"*"-docker-config."* ]]; then
+            rm -f "$DOCKER_CONFIG/config.json"
+            rmdir "$DOCKER_CONFIG" 2>/dev/null || true
+          fi

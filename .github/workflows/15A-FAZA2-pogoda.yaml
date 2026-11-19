@@ -1,0 +1,282 @@
+name: 15A FAZA-2 — Cache warstw Docker
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk/**
+      - .github/workflows/15A-FAZA2-pogoda.yaml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+    #working-directory: ./CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk
+
+env:
+  APP_DIR: ./CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk
+  HUB_IMAGE_BASE: ${{ format('{0}/{1}', vars.DOCKERHUB_USERNAME || 'piotrskoska', vars.DOCKER_IMAGE_NAME || 'python_pogoda') }}
+  CI_IMAGE: ${{ format('{0}/{1}:ci-faza2-{2}', vars.DOCKERHUB_USERNAME || 'piotrskoska', vars.DOCKER_IMAGE_NAME || 'python_pogoda', github.sha) }}
+  IMAGE_TAG: ${{ vars.FAZA2_IMAGE_TAG || 'faza2' }}
+  APP_PORT: ${{ vars.FAZA2_APP_PORT || '18092' }}
+  CONTAINER_NAME: ${{ vars.FAZA2_CONTAINER_NAME || 'pogoda_api_faza2' }}
+  WEATHER_CITY: ${{ vars.FAZA2_WEATHER_CITY || 'Warsaw' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          version: latest
+          driver: docker-container
+
+      - name: Build CI image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ env.APP_DIR }}
+          file: ${{ env.APP_DIR }}/Dockerfile
+          load: true
+          push: false
+          tags: ${{ env.CI_IMAGE }}
+          cache-from: type=gha,version=2,scope=15a-pogoda-faza2
+          cache-to: type=gha,version=2,scope=15a-pogoda-faza2,mode=max
+
+      - name: Verify weather API key is not in image metadata
+        run: |
+          if docker inspect "$CI_IMAGE" --format '{{json .Config.Env}}' | grep -F 'OPENWEATHER_API_KEY='; then
+            echo "OPENWEATHER_API_KEY zostal ustawiony w metadanych obrazu." >&2
+            exit 1
+          fi
+
+      - name: Save CI image artifact
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/${APP_DIR}"
+          docker save "$CI_IMAGE" -o "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
+
+      - name: Upload weather image
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: faza2-weather-image
+          path: ${{ github.workspace }}/CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk/image.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download weather image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: faza2-weather-image
+          path: ${{ env.APP_DIR }}
+
+      - name: Load weather image
+        run: docker load -i "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
+
+      - name: Start tested container
+        env:
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+        run: |
+          if [ -z "$OPENWEATHER_API_KEY" ]; then
+            echo "Brak sekretu OPENWEATHER_API_KEY." >&2
+            exit 1
+          fi
+          docker rm -f pogoda_api_faza2_ci >/dev/null 2>&1 || true
+          docker run -d \
+            --name pogoda_api_faza2_ci \
+            -p 127.0.0.1:18092:8080 \
+            -e OPENWEATHER_API_KEY \
+            "$CI_IMAGE"
+
+      - name: Wait for application
+        run: |
+          curl --fail --silent --show-error --retry 30 --retry-all-errors --retry-delay 2 \
+            http://127.0.0.1:18092/healthz
+
+      - name: Run real weather smoke test
+        run: |
+          python3 "${APP_DIR}/tests/smoke_test.py" \
+            --base-url http://127.0.0.1:18092 \
+            --city "$WEATHER_CITY"
+
+      - name: Show container logs after failure
+        if: failure()
+        run: docker logs pogoda_api_faza2_ci || true
+
+      - name: Remove tested container
+        if: always()
+        run: docker rm -f pogoda_api_faza2_ci >/dev/null 2>&1 || true
+
+  build-and-push:
+    needs: test
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_name == (vars.FAZA2_DEPLOY_BRANCH || 'main')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      image_digest: ${{ steps.publish.outputs.image_digest }}
+    steps:
+      - name: Download weather image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: faza2-weather-image
+          path: ${{ env.APP_DIR }}
+
+      - name: Load tested image
+        run: docker load -i "${GITHUB_WORKSPACE}/${APP_DIR}/image.tar"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME || 'piotrskoska' }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tag and push tested image
+        id: publish
+        run: |
+          TAG_IMAGE="${HUB_IMAGE_BASE}:${IMAGE_TAG}"
+          SHA_IMAGE="${HUB_IMAGE_BASE}:${IMAGE_TAG}-${GITHUB_SHA}"
+          docker tag "$CI_IMAGE" "$TAG_IMAGE"
+          docker tag "$CI_IMAGE" "$SHA_IMAGE"
+
+          PUSH_OUTPUT=$(docker push "$TAG_IMAGE")
+          printf '%s\n' "$PUSH_OUTPUT"
+          SHA_OUTPUT=$(docker push "$SHA_IMAGE")
+          printf '%s\n' "$SHA_OUTPUT"
+
+          DIGEST=$(printf '%s\n%s\n' "$PUSH_OUTPUT" "$SHA_OUTPUT" |
+            grep -oE 'sha256:[a-f0-9]{64}' | head -n 1)
+          if [ -z "$DIGEST" ]; then
+            echo "Nie znaleziono jednoznacznego digestu obrazu." >&2
+            exit 1
+          fi
+          echo "image_digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: build-and-push
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 15
+    concurrency:
+      group: pogoda-faza2-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Create private Docker configuration
+        run: |
+          DOCKER_CONFIG_DIR=$(mktemp -d "${RUNNER_TEMP}/faza2-docker-config.XXXXXX")
+          chmod 700 "$DOCKER_CONFIG_DIR"
+          echo "DOCKER_CONFIG=$DOCKER_CONFIG_DIR" >> "$GITHUB_ENV"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME || 'piotrskoska' }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          logout: false
+
+      - name: Preflight deployment inputs
+        env:
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+          IMAGE_DIGEST: ${{ needs.build-and-push.outputs.image_digest }}
+        run: |
+          if [ -z "$OPENWEATHER_API_KEY" ]; then
+            echo "Brak sekretu OPENWEATHER_API_KEY." >&2
+            exit 1
+          fi
+          if [ -z "$IMAGE_DIGEST" ]; then
+            echo "Brak digestu opublikowanego obrazu." >&2
+            exit 1
+          fi
+          if [ -z "$CONTAINER_NAME" ] || [ -z "$APP_PORT" ] || [ -z "$WEATHER_CITY" ]; then
+            echo "Brak kompletnej konfiguracji deployu." >&2
+            exit 1
+          fi
+
+          case "$APP_PORT" in
+            ''|*[!0-9]*)
+              echo "Niepoprawny port aplikacji: $APP_PORT" >&2
+              exit 1
+              ;;
+          esac
+          if [ "$APP_PORT" -lt 1024 ] || [ "$APP_PORT" -gt 65535 ]; then
+            echo "Port musi nalezec do zakresu 1024-65535." >&2
+            exit 1
+          fi
+
+          echo "IMAGE_REFERENCE=${HUB_IMAGE_BASE}@${IMAGE_DIGEST}" >> "$GITHUB_ENV"
+
+      - name: Pull published image
+        run: docker pull "$IMAGE_REFERENCE"
+
+      - name: Replace deployed container
+        env:
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+        run: |
+          EXISTING=$(docker ps -a --filter "name=^/${CONTAINER_NAME}$" --format '{{.Names}}')
+          if [ "$EXISTING" = "$CONTAINER_NAME" ]; then
+            docker rm --force "$CONTAINER_NAME"
+          fi
+
+          docker run -d \
+            --name "$CONTAINER_NAME" \
+            --restart unless-stopped \
+            -p "${APP_PORT}:8080" \
+            -e OPENWEATHER_API_KEY \
+            "$IMAGE_REFERENCE"
+
+      - name: Verify deployed application
+        run: |
+          curl --fail --silent --show-error --retry 30 --retry-all-errors --retry-delay 2 \
+            "http://127.0.0.1:${APP_PORT}/healthz"
+          if [ "$(docker inspect --format '{{.State.Running}}' "$CONTAINER_NAME")" != "true" ]; then
+            echo "Kontener nie jest uruchomiony." >&2
+            exit 1
+          fi
+
+          python3 "${APP_DIR}/tests/smoke_test.py" \
+            --base-url "http://127.0.0.1:${APP_PORT}" \
+            --city "$WEATHER_CITY"
+
+      - name: Show container logs after deployment failure
+        if: failure()
+        run: docker logs "$CONTAINER_NAME" || true
+
+      - name: Cleanup Docker login
+        if: always()
+        run: |
+          docker logout >/dev/null 2>&1 || true
+
+          if [ -n "${DOCKER_CONFIG:-}" ]; then
+            case "$DOCKER_CONFIG" in
+              "${RUNNER_TEMP}/faza2-docker-config."*)
+                rm -f "$DOCKER_CONFIG/config.json"
+                rmdir "$DOCKER_CONFIG" 2>/dev/null || true
+                ;;
+              *)
+                echo "Nie usuwam nieoczekiwanej sciezki Docker config: $DOCKER_CONFIG" >&2
+                ;;
+            esac
+          fi
